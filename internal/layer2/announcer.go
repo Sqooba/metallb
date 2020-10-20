@@ -4,6 +4,7 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -13,7 +14,8 @@ import (
 
 // Announce is used to "announce" new IPs mapped to the node's MAC address.
 type Announce struct {
-	logger log.Logger
+	logger         log.Logger
+	nicFilterRegex *regexp.Regexp
 
 	sync.RWMutex
 	arps     map[int]*arpResponder
@@ -27,14 +29,24 @@ type Announce struct {
 }
 
 // New returns an initialized Announce.
-func New(l log.Logger) (*Announce, error) {
+func New(l log.Logger, nicFilterPattern string) (*Announce, error) {
+
+	var nicRegexp *regexp.Regexp
+	if nicFilterPattern != "" {
+		var err error
+		nicRegexp, err = regexp.Compile(nicFilterPattern)
+		if err != nil {
+			return nil, err
+		}
+	}
 	ret := &Announce{
-		logger:   l,
-		arps:     map[int]*arpResponder{},
-		ndps:     map[int]*ndpResponder{},
-		ips:      map[string]net.IP{},
-		ipRefcnt: map[string]int{},
-		spamCh:   make(chan net.IP, 1024),
+		logger:         l,
+		nicFilterRegex: nicRegexp,
+		arps:           map[int]*arpResponder{},
+		ndps:           map[int]*ndpResponder{},
+		ips:            map[string]net.IP{},
+		ipRefcnt:       map[string]int{},
+		spamCh:         make(chan net.IP, 1024),
 	}
 	go ret.interfaceScan()
 	go ret.spamLoop()
@@ -63,6 +75,13 @@ func (a *Announce) updateInterfaces() {
 	for _, intf := range ifs {
 		ifi := intf
 		l := log.With(a.logger, "interface", ifi.Name)
+
+		if a.nicFilterRegex != nil {
+			if !a.nicFilterRegex.Match([]byte(ifi.Name)) {
+				continue
+			}
+		}
+
 		addrs, err := ifi.Addrs()
 		if err != nil {
 			l.Log("op", "getAddresses", "error", err, "msg", "couldn't get addresses for interface")

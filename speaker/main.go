@@ -73,6 +73,7 @@ func main() {
 		mlNamespace = flag.String("ml-namespace", os.Getenv("METALLB_ML_NAMESPACE"), "Namespace of the speakers (for MemberList / fast dead node detection)")
 		mlSecret    = flag.String("ml-secret-key", os.Getenv("METALLB_ML_SECRET_KEY"), "Secret key for MemberList (fast dead node detection)")
 		myNode      = flag.String("node-name", os.Getenv("METALLB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
+		nicPattern  = flag.String("nic-pattern", os.Getenv("METALLB_NIC_INCLUDE_PATTERN"), "regex pattern to filter nic, including only network interfaces with name matching the pattern. Example: enp.*|flannel.1|docker0")
 		port        = flag.Int("port", 80, "HTTP listening port")
 	)
 	flag.Parse()
@@ -103,6 +104,7 @@ func main() {
 	// Setup all clients and speakers, config decides what is being done runtime.
 	ctrl, err := newController(controllerConfig{
 		MyNode: *myNode,
+		NicPattern: *nicPattern,
 		Logger: logger,
 		SList:  sList,
 	})
@@ -152,6 +154,7 @@ type controller struct {
 
 type controllerConfig struct {
 	MyNode string
+	NicPattern string
 	Logger gokitlog.Logger
 	SList  SpeakerList
 
@@ -170,7 +173,7 @@ func newController(cfg controllerConfig) (*controller, error) {
 	}
 
 	if !cfg.DisableLayer2 {
-		a, err := layer2.New(cfg.Logger)
+		a, err := layer2.New(cfg.Logger, cfg.NicPattern)
 		if err != nil {
 			return nil, fmt.Errorf("making layer2 announcer: %s", err)
 		}

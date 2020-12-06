@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"go.universe.tf/metallb/internal/bgp"
@@ -73,7 +74,7 @@ func main() {
 		mlNamespace = flag.String("ml-namespace", os.Getenv("METALLB_ML_NAMESPACE"), "Namespace of the speakers (for MemberList / fast dead node detection)")
 		mlSecret    = flag.String("ml-secret-key", os.Getenv("METALLB_ML_SECRET_KEY"), "Secret key for MemberList (fast dead node detection)")
 		myNode      = flag.String("node-name", os.Getenv("METALLB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
-		nicPattern  = flag.String("nic-pattern", os.Getenv("METALLB_NIC_INCLUDE_PATTERN"), "regex pattern to filter nic, including only network interfaces with name matching the pattern. Example: enp.*|flannel.1|docker0")
+		nicPattern  = flag.String("nic-pattern", os.Getenv("METALLB_NIC_INCLUDE_PATTERN"), "regex pattern to filter nic, including only network interfaces with name matching the pattern. Example: <defaultNic>|flannel.1|docker0")
 		port        = flag.Int("port", 80, "HTTP listening port")
 	)
 	flag.Parse()
@@ -83,6 +84,17 @@ func main() {
 	if *myNode == "" {
 		logger.Log("op", "startup", "error", "must specify --node-name or METALLB_NODE_NAME", "msg", "missing configuration")
 		os.Exit(1)
+	}
+
+	defaultNic, err := getHostNetworkInterfaceName(*host)
+	if err != nil {
+		logger.Log("op", "startup", "error", err)
+		os.Exit(1)
+	}
+	if *nicPattern != "" {
+		newNicPattern := strings.Replace(*nicPattern, "<defaultNic>", defaultNic, 1)
+		nicPattern = &newNicPattern
+		logger.Log("op", "startup", "msg", "new nicPattern is " + newNicPattern)
 	}
 
 	stopCh := make(chan struct{})
@@ -353,6 +365,47 @@ func (c *controller) SetNode(l gokitlog.Logger, node *v1.Node) k8s.SyncState {
 		}
 	}
 	return k8s.SyncStateSuccess
+}
+
+func getHostNetworkInterfaceName(hostIp string) (string, error) {
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue // interface down
+		}
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue // loopback interface
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return "", err
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			ip = ip.To4()
+			if ip == nil {
+				continue // not an ipv4 address
+			}
+			if ip.String() == hostIp {
+				return iface.Name, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no network interface matching %s", hostIp)
 }
 
 // A Protocol can advertise an IP address.
